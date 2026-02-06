@@ -1,0 +1,191 @@
+zabbix_export:
+  version: '7.4'
+  template_groups:
+    - uuid: 459fe610f1824b948e57f34ea57881a5
+      name: PDZ_Template
+    - uuid: a571c0d144b14fd4a87a9d9b2aa9fcd6
+      name: Templates/Applications
+  templates:
+    - uuid: 6b583b6be6b84764b69300e0d88af592
+      template: 'Template SSL Certificate Monitor'
+      name: 'Template SSL Certificate Monitor'
+      description: |
+        TEMPLATE SSL CERTIFICATE MONITOR
+        ================================
+        
+        This template monitors SSL/TLS certificate validity and expiration for websites.
+        
+        FEATURES
+        ========
+        
+        - Automatic SSL/TLS certificate verification
+        - Calculation of days remaining until expiration
+        - Gradual alerts to prevent expiration
+        - Certificate status monitoring
+        
+        CONFIGURATION
+        =============
+        
+        IMPORTANT: This template requires an external script on the Zabbix server.
+        
+        1. Create the script /usr/lib/zabbix/externalscripts/check_ssl_cert.sh on the Zabbix server
+        2. Import this template into Zabbix
+        3. Associate it with an existing host
+        4. Configure the following HOST-level macros:
+           - {$WEB.SSL.HOST} = domain name (e.g., example.com)
+           - {$WEB.SSL.PORT} = 443 (HTTPS port)
+        
+        REQUIRED SCRIPT
+        ===============
+        
+        Create file: /usr/lib/zabbix/externalscripts/check_ssl_cert.sh
+        
+        #!/bin/bash
+        HOST=$1
+        PORT=$2
+        
+        if [ -z "$HOST" ] || [ -z "$PORT" ]; then
+            echo "0"
+            exit 1
+        fi
+        
+        # Get certificate expiry date
+        EXPIRY=$(echo | openssl s_client -servername "$HOST" -connect "$HOST:$PORT" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+        
+        if [ -z "$EXPIRY" ]; then
+            echo "0"
+            exit 1
+        fi
+        
+        # Convert to epoch and calculate days
+        EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s 2>/dev/null)
+        NOW_EPOCH=$(date +%s)
+        DAYS=$(( ($EXPIRY_EPOCH - $NOW_EPOCH) / 86400 ))
+        
+        echo "$DAYS"
+        
+        Then execute:
+        chmod +x /usr/lib/zabbix/externalscripts/check_ssl_cert.sh
+        chown zabbix:zabbix /usr/lib/zabbix/externalscripts/check_ssl_cert.sh
+        
+        AVAILABLE MACROS
+        ================
+        
+        - {$WEB.SSL.HOST} = example.com (domain with certificate to monitor)
+        - {$WEB.SSL.PORT} = 443 (HTTPS port, default 443)
+        - {$WEB.SSL.CHECK.INTERVAL} = 6h (interval between checks)
+        - {$WEB.SSL.CERT.EXPIRY.WARN} = 30 (days for HIGH alert)
+        - {$WEB.SSL.CERT.EXPIRY.CRIT} = 5 (days for DISASTER alert)
+        
+        CONFIGURED TRIGGERS
+        ===================
+        
+        1. SSL Certificate Expiring Soon (HIGH) - certificate expiring within 30 days
+        2. SSL Certificate Expiring Critical (DISASTER) - certificate expiring within 5 days
+        3. SSL Certificate Expired (DISASTER) - certificate already expired
+        4. SSL Certificate Check Failed (HIGH) - unable to verify certificate
+        
+        USAGE EXAMPLE
+        =============
+        
+        To monitor certificate for https://example.com:
+        
+        1. Create the script on Zabbix server (see above)
+        2. Add this template to the host
+        3. Configure at host level:
+           {$WEB.SSL.HOST} = example.com
+           {$WEB.SSL.PORT} = 443
+      groups:
+        - name: PDZ_Template
+        - name: Templates/Applications
+      items:
+        - uuid: be5a24fef53b480fad9c96db6b47b58f
+          name: 'SSL Certificate Days Until Expiry'
+          type: EXTERNAL
+          key: 'check_ssl_cert.sh[{$WEB.SSL.HOST},{$WEB.SSL.PORT}]'
+          delay: '{$WEB.SSL.CHECK.INTERVAL}'
+          history: 90d
+          value_type: FLOAT
+          units: days
+          description: |
+            Number of days remaining until SSL certificate expiration.
+            Calculated via external script that queries the certificate.
+          tags:
+            - tag: Application
+              value: 'SSL Certificate'
+          triggers:
+            - uuid: 6f7e8d269aa54c0691c9e995afb403fb
+              expression: 'last(/Template SSL Certificate Monitor/check_ssl_cert.sh[{$WEB.SSL.HOST},{$WEB.SSL.PORT}])=0'
+              name: 'SSL Certificate Check Failed: {$WEB.SSL.HOST}'
+              priority: HIGH
+              description: |
+                SSL certificate check failed for {$WEB.SSL.HOST}:{$WEB.SSL.PORT}.
+                
+                Possible causes:
+                - Server not reachable
+                - Invalid SSL certificate
+                - Certificate chain issues
+                - HTTPS port closed or filtered
+                - Script not configured correctly
+                
+                Required action: Verify SSL configuration and script setup
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: security
+            - uuid: fb7cf183e6ce472ba68cad2261bc0460
+              expression: 'last(/Template SSL Certificate Monitor/check_ssl_cert.sh[{$WEB.SSL.HOST},{$WEB.SSL.PORT}])<0 and last(/Template SSL Certificate Monitor/check_ssl_cert.sh[{$WEB.SSL.HOST},{$WEB.SSL.PORT}])<>0'
+              name: 'SSL Certificate Expired: {$WEB.SSL.HOST}'
+              priority: DISASTER
+              description: |
+                CRITICAL: SSL certificate for {$WEB.SSL.HOST} has EXPIRED!
+                Days since expiration: {ITEM.LASTVALUE}
+                
+                Service may be inaccessible to users.
+                Required action: RENEW certificate IMMEDIATELY.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: security
+            - uuid: 1f896d37c6ea471699d4f1a3e3480f1a
+              expression: 'last(/Template SSL Certificate Monitor/check_ssl_cert.sh[{$WEB.SSL.HOST},{$WEB.SSL.PORT}])<{$WEB.SSL.CERT.EXPIRY.CRIT} and last(/Template SSL Certificate Monitor/check_ssl_cert.sh[{$WEB.SSL.HOST},{$WEB.SSL.PORT}])>0'
+              name: 'SSL Certificate Expiring Critical: {$WEB.SSL.HOST}'
+              priority: DISASTER
+              description: |
+                URGENT: SSL certificate for {$WEB.SSL.HOST} will expire in less than {$WEB.SSL.CERT.EXPIRY.CRIT} days!
+                Days remaining: {ITEM.LASTVALUE}
+                
+                Required action: RENEW certificate IMMEDIATELY to avoid service interruption.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: security
+            - uuid: 1616bec67da74066b96b88d24dbc8f3b
+              expression: 'last(/Template SSL Certificate Monitor/check_ssl_cert.sh[{$WEB.SSL.HOST},{$WEB.SSL.PORT}])<{$WEB.SSL.CERT.EXPIRY.WARN} and last(/Template SSL Certificate Monitor/check_ssl_cert.sh[{$WEB.SSL.HOST},{$WEB.SSL.PORT}])>={$WEB.SSL.CERT.EXPIRY.CRIT}'
+              name: 'SSL Certificate Expiring Soon: {$WEB.SSL.HOST}'
+              priority: HIGH
+              description: |
+                SSL certificate for {$WEB.SSL.HOST} will expire in less than {$WEB.SSL.CERT.EXPIRY.WARN} days.
+                Days remaining: {ITEM.LASTVALUE}
+                
+                Required action: Schedule certificate renewal.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: security
+      macros:
+        - macro: '{$WEB.SSL.CERT.EXPIRY.CRIT}'
+          value: '5'
+          description: 'Threshold in days for DISASTER alert on critical certificate expiration'
+        - macro: '{$WEB.SSL.CERT.EXPIRY.WARN}'
+          value: '30'
+          description: 'Threshold in days for HIGH alert on certificate expiration'
+        - macro: '{$WEB.SSL.CHECK.INTERVAL}'
+          value: 6h
+          description: 'Interval between SSL certificate checks (e.g., 1h, 6h, 12h)'
+        - macro: '{$WEB.SSL.HOST}'
+          value: example.com
+          description: 'Domain name to monitor (without https://, domain only)'
+        - macro: '{$WEB.SSL.PORT}'
+          value: '443'
+          description: 'HTTPS port (usually 443)'
